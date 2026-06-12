@@ -1,7 +1,9 @@
-venv/
-__pycache__/
 .env
-downloads/
-outputs/
+token.pickle
+config/credentials.json
+
+__pycache__/
 *.pyc
-*.log
+
+downloads/
+.vscode/

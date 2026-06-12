@@ -18,9 +18,16 @@ from __future__ import annotations
 import io
 import logging
 import mimetypes
+import sys
 import time
 from pathlib import Path
 from typing import List
+
+# Ensure the project root is on the import path so sibling packages like
+# config and database can be imported when this module is executed directly.
+_root_path = Path(__file__).resolve().parents[1]
+if str(_root_path) not in sys.path:
+    sys.path.insert(0, str(_root_path))
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -108,25 +115,50 @@ class DriveWatcherAgent:
         self.service = build("drive", "v3", credentials=self.creds)
 
     def list_new_files(self) -> List[dict]:
-        """List files in the watched folder that have not been processed.
+        all_files = []
 
-        Returns:
-            List of file metadata dictionaries.
-        """
-        query = f"'{self.folder_id}' in parents and trashed = false"
-        results = (
-            self.service.files()
-            .list(q=query, fields="files(id, name, mimeType)")
-            .execute()
+        folder_query = (
+            f"'{self.folder_id}' in parents "
+            "and mimeType='application/vnd.google-apps.folder' "
+            "and trashed=false"
         )
-        files = results.get("files", [])
-        # Filter out folders and the processed folder itself
-        new_files = [
-            f
-            for f in files
-            if f["id"] != self.processed_folder_id and f.get("mimeType") != "application/vnd.google-apps.folder"
-        ]
-        return new_files
+
+        folders = (
+            self.service.files()
+            .list(
+                q=folder_query,
+                fields="files(id,name)"
+            )
+            .execute()
+            .get("files", [])
+        )
+
+        logger.info("Found %s subfolders", len(folders))
+
+        for folder in folders:
+
+            logger.info("Scanning folder: %s", folder["name"])
+
+            file_query = (
+                f"'{folder['id']}' in parents "
+                "and trashed=false"
+            )
+
+            files = (
+                self.service.files()
+                .list(
+                    q=file_query,
+                    fields="files(id,name,mimeType)"
+                )
+                .execute()
+                .get("files", [])
+            )
+
+            all_files.extend(files)
+
+        logger.info("Found %s files total", len(all_files))
+
+        return all_files
 
     def download_file(self, file_id: str, filename: str) -> Path:
         """Download a file from Google Drive to the local download directory.
