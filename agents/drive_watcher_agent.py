@@ -114,51 +114,43 @@ class DriveWatcherAgent:
         self.creds = _authenticate()
         self.service = build("drive", "v3", credentials=self.creds)
 
-    def list_new_files(self) -> List[dict]:
-        all_files = []
+    def _walk_folder(self, folder_id: str) -> List[dict]:
+        """Recursively list all files inside a Drive folder."""
+        files = []
+        page_token = None
 
-        folder_query = (
-            f"'{self.folder_id}' in parents "
-            "and mimeType='application/vnd.google-apps.folder' "
-            "and trashed=false"
-        )
-
-        folders = (
-            self.service.files()
-            .list(
-                q=folder_query,
-                fields="files(id,name)"
-            )
-            .execute()
-            .get("files", [])
-        )
-
-        logger.info("Found %s subfolders", len(folders))
-
-        for folder in folders:
-
-            logger.info("Scanning folder: %s", folder["name"])
-
-            file_query = (
-                f"'{folder['id']}' in parents "
-                "and trashed=false"
-            )
-
-            files = (
+        query = f"'{folder_id}' in parents and trashed=false"
+        while True:
+            response = (
                 self.service.files()
                 .list(
-                    q=file_query,
-                    fields="files(id,name,mimeType)"
+                    q=query,
+                    fields="nextPageToken, files(id,name,mimeType)",
+                    pageToken=page_token,
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
                 )
                 .execute()
-                .get("files", [])
             )
+            items = response.get("files", [])
+            for item in items:
+                if item.get("mimeType") == "application/vnd.google-apps.folder":
+                    files.extend(self._walk_folder(item["id"]))
+                else:
+                    files.append(item)
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return files
 
-            all_files.extend(files)
+    def list_new_files(self) -> List[dict]:
+        root_files = []
 
-        logger.info("Found %s files total", len(all_files))
+        logger.info("Scanning Google Drive folder recursively: %s", self.folder_id)
+        root_files = self._walk_folder(self.folder_id)
 
-        return all_files
+        logger.info("Found %s files total", len(root_files))
+        return root_files
 
     def download_file(self, file_id: str, filename: str) -> Path:
         """Download a file from Google Drive to the local download directory.
@@ -211,8 +203,15 @@ class DriveWatcherAgent:
         # Process Offering Memorandum PDF
         if mime_type == "application/pdf" or path.suffix.lower() == ".pdf":
             property_data, broker_data = om_extraction_agent.extract_property_info(str(path))
-            self.supabase.insert_property(property_data)
+            inserted_property = self.supabase.insert_property(property_data)
             self.supabase.insert_broker(broker_data)
+
+            property_id = None
+            if inserted_property and isinstance(inserted_property, dict):
+                property_id = inserted_property.get("id") or inserted_property.get("property_id")
+            if not property_id:
+                property_id = property_data.get("id")
+
             # Run due diligence and seller weakness analysis
             dd_score, missing_items = due_diligence_agent.evaluate(property_data)
             sw_score, weaknesses = seller_weakness_agent.evaluate(property_data)
@@ -225,7 +224,7 @@ class DriveWatcherAgent:
             )
             # Insert analysis results
             analysis_record = {
-                "property_id": property_data.get("id"),
+                "property_id": property_id,
                 "due_diligence_score": dd_score,
                 "seller_weakness_score": sw_score,
                 "overall_score": ranking.get("overall_score"),
