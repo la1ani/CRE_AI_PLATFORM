@@ -66,7 +66,7 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
 
 def validate() -> None:
-    """Validate required configuration values.
+    """Validate required configuration values for the full application.
 
     Raises:
         RuntimeError: If any required configuration is missing.
@@ -83,6 +83,23 @@ def validate() -> None:
     if missing:
         raise RuntimeError(
             f"Missing required configuration values: {', '.join(missing)}"
+        )
+
+
+def validate_supabase() -> None:
+    """Validate only Supabase credentials.
+
+    Raises:
+        RuntimeError: If Supabase configuration is missing.
+    """
+    missing = []
+    if not SUPABASE_URL:
+        missing.append("SUPABASE_URL")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        missing.append("SUPABASE_SERVICE_ROLE_KEY")
+    if missing:
+        raise RuntimeError(
+            f"Missing required Supabase configuration values: {', '.join(missing)}"
         )
 
 

@@ -21,7 +21,7 @@ class SupabaseLoader:
 
     def __init__(self):
         self.url = os.getenv("SUPABASE_URL")
-        self.key = os.getenv("SUPABASE_KEY")
+        self.key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 
         print("URL:", self.url)
         print("KEY FOUND:", bool(self.key))

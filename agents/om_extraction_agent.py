@@ -2,102 +2,147 @@
 OM Extraction Agent.
 
 This agent extracts structured data from Offering Memorandum (OM) PDFs.
-It uses PyMuPDF to read the document text and applies simple
-regular-expression heuristics to extract common fields such as price,
-NOI, cap rate, occupancy and property characteristics. For complex
-memorandums or documents with inconsistent formatting, consider
-augmenting this module with AI extraction using Gemini, DeepSeek or
-OpenAI APIs (see config/settings.py for API keys).
-
-Functions return two dictionaries: one for property attributes and
-another for broker contact information.
+It uses PyMuPDF to read PDF text and applies enhanced heuristics for key
+commercial real estate fields including asking price, NOI, cap rate,
+occupancy, building area, land area and broker details.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Dict, Tuple
-
-import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
-
 FIELD_PATTERNS = {
-    "price": r"(?i)price\s*[:\-]?\s*\$?([\d,]+)",
-    "noi": r"(?i)noi\s*[:\-]?\s*\$?([\d,]+)",
-    "cap_rate": r"(?i)cap\s*rate\s*[:\-]?\s*(\d+\.\d+%?)",
-    "occupancy": r"(?i)occupancy\s*[:\-]?\s*(\d+%?)",
-    "building_sf": r"(?i)building\s+sf\s*[:\-]?\s*([\d,]+)",
-    "land_sf": r"(?i)land\s+sf\s*[:\-]?\s*([\d,]+)",
-    "year_built": r"(?i)year\s+built\s*[:\-]?\s*(\d{4})",
+    "asking_price": r"(?i)(?:asking|list|sale|purchase|offered at|price)\s*(?:price)?\s*[:\-]?\s*\$?([\d,]+(?:\.\d+)?)",
+    "noi": r"(?i)(?:net operating income|stabilized noi|noi)\s*[:\-]?\s*\$?([\d,]+(?:\.\d+)?)",
+    "cap_rate": r"(?i)cap\s*rate\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+    "occupancy": r"(?i)occupancy\s*[:\-]?\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+    "building_sf": r"(?i)(?:building|rentable|total)\s*(?:sf|square feet|square footage)\s*[:\-]?\s*([\d,]+)",
+    "land_sf": r"(?i)(?:land|lot)\s*(?:sf|square feet|acreage|size)\s*[:\-]?\s*([\d,]+)",
+    "year_built": r"(?i)(?:year built|built)\s*[:\-]?\s*([0-9]{4})",
 }
 
+PROPERTY_NAME_BLACKLIST = [
+    "confidential",
+    "broker",
+    "contact",
+    "property address",
+    "offering memorandum",
+    "investment summary",
+    "financial summary",
+    "table of contents",
+    "please contact",
+    "www.",
+    "@",
+    "email",
+]
 
-def extract_text_from_pdf(path: str) -> str:
-    """Read text from a PDF file using PyMuPDF.
+BROKER_NAME_PATTERN = re.compile(r"(?i)(?:broker|listing agent|contact)\s*[:\-]?\s*([A-Za-z .,'-]+)")
+COMPANY_NAME_PATTERN = re.compile(r"(?i)(?:company|firm)\s*[:\-]?\s*([A-Za-z .,'-]+)")
+EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+PHONE_PATTERN = re.compile(
+    r"(?:(?:\+?\d{1,2}\s*)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4})"
+)
 
-    Args:
-        path: Filesystem path to the PDF.
 
-    Returns:
-        All text from the document concatenated.
-    """
-    text = []
-    with fitz.open(path) as doc:
-        for page in doc:
-            text.append(page.get_text())
-    return "\n".join(text)
+def _clean_currency(raw: str) -> str:
+    if not raw:
+        return ""
+    normalized = raw.replace(",", "").replace("$", "").strip()
+    try:
+        return f"${int(float(normalized)):,}"
+    except ValueError:
+        return raw.strip()
+
+
+def _clean_percent(raw: str) -> str:
+    if not raw:
+        return ""
+    normalized = raw.replace("%", "").strip()
+    try:
+        value = float(normalized)
+        if value.is_integer():
+            return f"{int(value)}%"
+        return f"{value:.2f}%"
+    except ValueError:
+        return raw.strip()
+
+
+def _extract_text(path: str) -> str:
+    try:
+        import fitz
+    except ImportError as exc:
+        logger.error("PyMuPDF is required for OM extraction: %s", exc)
+        return ""
+
+    file_path = Path(path)
+    if not file_path.exists():
+        logger.warning("OM file not found: %s", path)
+        return ""
+
+    try:
+        with fitz.open(str(file_path)) as doc:
+            return "\n".join(page.get_text() for page in doc)
+    except Exception as exc:
+        logger.warning("Failed to read OM PDF %s: %s", path, exc)
+        return ""
+
+
+def _extract_property_name(text: str) -> str:
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines[:60]:
+        lower = line.lower()
+        if any(term in lower for term in PROPERTY_NAME_BLACKLIST):
+            continue
+        if EMAIL_PATTERN.search(line) or PHONE_PATTERN.search(line):
+            continue
+        if "$" in line or re.search(r"\d{5}", line):
+            continue
+        if len(line) < 8 or len(line) > 80:
+            continue
+        if re.search(r"(apartments|multifamily|retail|office|industrial|shopping center|hotel|medical)", lower):
+            return line.strip()
+        if line.isupper() and len(line.split()) <= 8:
+            return line.title().strip()
+    return lines[0].title().strip() if lines else ""
 
 
 def extract_property_info(path: str) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Extract property and broker data from an OM PDF.
-
-    Args:
-        path: Filesystem path to the OM PDF.
-
-    Returns:
-        (property_data, broker_data): Two dictionaries containing
-        extracted fields. Missing values are set to empty strings.
-    """
     logger.info("Extracting property information from %s", path)
-    text = extract_text_from_pdf(path)
+    text = _extract_text(path)
     property_data: Dict[str, str] = {}
     broker_data: Dict[str, str] = {}
 
-    # Extract property-level fields using regex patterns
     for field, pattern in FIELD_PATTERNS.items():
         match = re.search(pattern, text)
-        property_data[field] = match.group(1).replace(",", "") if match else ""
+        raw_value = match.group(1) if match else ""
+        if field in {"asking_price", "noi"}:
+            property_data[field] = _clean_currency(raw_value)
+        elif field in {"cap_rate", "occupancy"}:
+            property_data[field] = _clean_percent(raw_value)
+        else:
+            property_data[field] = raw_value.replace(",", "").strip()
 
-    # Attempt to extract property name as the first capitalized phrase
-    property_name_match = re.search(r"(?m)^([A-Z][\w\s]+)$", text)
-    property_data["property_name"] = (
-        property_name_match.group(1).strip() if property_name_match else ""
-    )
+    property_data["property_name"] = _extract_property_name(text)
+    property_data["price"] = property_data.get("asking_price", "")
 
-    # Attempt to find broker contact details (name, company, email, phone)
-    # These patterns are simplistic; adjust as needed for your OMs.
-    broker_name_match = re.search(r"(?i)broker\s*[:\-]?\s*([A-Za-z ,]+)", text)
-    broker_company_match = re.search(r"(?i)company\s*[:\-]?\s*([A-Za-z ,]+)", text)
-    broker_email_match = re.search(r"[\w.+-]+@\w+\.\w+", text)
-    broker_phone_match = re.search(r"(?:(?:\+?\d{1,2}\s*)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4})", text)
+    broker_name_match = BROKER_NAME_PATTERN.search(text)
+    broker_company_match = COMPANY_NAME_PATTERN.search(text)
+    broker_email_match = EMAIL_PATTERN.search(text)
+    broker_phone_match = PHONE_PATTERN.search(text)
 
-    broker_data["broker_name"] = (
-        broker_name_match.group(1).strip() if broker_name_match else ""
-    )
-    broker_data["broker_company"] = (
-        broker_company_match.group(1).strip() if broker_company_match else ""
-    )
-    broker_data["broker_email"] = (
-        broker_email_match.group(0).strip() if broker_email_match else ""
-    )
-    broker_data["broker_phone"] = (
-        broker_phone_match.group(0).strip() if broker_phone_match else ""
-    )
+    broker_data["broker_name"] = broker_name_match.group(1).strip() if broker_name_match else ""
+    broker_data["broker_company"] = broker_company_match.group(1).strip() if broker_company_match else ""
+    broker_data["broker_email"] = broker_email_match.group(0).strip() if broker_email_match else ""
+    broker_data["broker_phone"] = broker_phone_match.group(0).strip() if broker_phone_match else ""
 
-    # Additional fields could be extracted with AI services here
     return property_data, broker_data
 
 
