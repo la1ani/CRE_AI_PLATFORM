@@ -18,12 +18,19 @@ available, the extraction will fail with a clear error message.
 
 from __future__ import annotations
 
-import pdfplumber
+try:
+    import pdfplumber
+except ImportError:  # pragma: no cover
+    pdfplumber = None
+
 import sys
 from pathlib import Path
 from typing import Optional
 
 def extract_tables(pdf_path):
+
+    if pdfplumber is None:
+        return []
 
     rows = []
 
