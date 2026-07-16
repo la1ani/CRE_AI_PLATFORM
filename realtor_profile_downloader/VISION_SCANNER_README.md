@@ -15,16 +15,20 @@ Using one request for all crops reduces API usage from six requests per realtor 
 
 The scanner never invents rows hidden inside an internally scrollable table. A screenshot that says `Showing 1 to 6 of 26 entries` is stored as six visible rows and 26 expected rows, with status `PARTIAL_HIDDEN_ROWS`.
 
+Validation also reduces the score when monthly chart labels are detected but chart values are unreadable. When visible title-company relationship counts do not cover all buyer/seller sides, the profile is marked `PARTIAL_HIDDEN_ROWS` rather than incorrectly marked complete.
+
 ## Install on Windows
 
-Use the actual cloned project path. For example:
+Use the actual cloned project path:
 
 ```powershell
 cd C:\Users\HP\CRE_AI_PLATFORM
 git switch agent/realtor-profile-ai-vision
 git pull origin agent/realtor-profile-ai-vision
 
-py -m venv .venv
+if (-not (Test-Path ".venv\Scripts\python.exe")) {
+    py -m venv .venv
+}
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r realtor_profile_downloader\requirements-vision.txt
 ```
@@ -38,20 +42,73 @@ Copy-Item realtor_profile_downloader\.env.vision.example .env
 notepad .env
 ```
 
-Set at least:
+Set Gemini and the local folder:
 
 ```env
 GEMINI_API_KEY=your_key
-GEMINI_MODEL=gemini-2.5-flash-lite
-GEMINI_FALLBACK_MODELS=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash,gemini-2.5-flash
 REALTOR_PROFILE_ROOT=C:\RealtorProfileScanner
 ```
 
-Also configure either Google Sheets credentials, Supabase credentials, or both.
+## Google Sheets setup
 
-For Google Sheets, share the spreadsheet with the service-account email in the JSON credentials file.
+1. Create a blank Google spreadsheet.
+2. Copy the spreadsheet ID from its URL. It is the text between `/d/` and `/edit`.
+3. In Google Cloud, enable the Google Sheets API and Google Drive API.
+4. Create a service account and download its JSON key.
+5. Save the key locally, for example:
 
-For Supabase, run `sql/realtor_profile_vision_schema.sql` once in the Supabase SQL editor.
+```text
+C:\RealtorProfileScanner\service_account.json
+```
+
+6. Open the JSON file and copy the `client_email` value.
+7. Share the Google spreadsheet with that email as **Editor**.
+8. Add these values to `.env`:
+
+```env
+GOOGLE_SHEET_ID=your_spreadsheet_id
+GOOGLE_SERVICE_ACCOUNT_FILE=C:\RealtorProfileScanner\service_account.json
+```
+
+Verify the connection and automatically create all worksheet tabs:
+
+```powershell
+.\.venv\Scripts\python.exe -m realtor_profile_downloader.vision_scanner.scanner --setup-storage
+```
+
+The command creates/verifies:
+
+- Realtor Master
+- LO Relationships
+- Loan Companies
+- Visible Transactions
+- Loan Details
+- Title Companies
+- Listings
+- Scan Review
+
+## Sync reports that were already scanned
+
+Profiles scanned before Google Sheets was configured do not need another Gemini request. Upload every existing JSON report with:
+
+```powershell
+.\.venv\Scripts\python.exe -m realtor_profile_downloader.vision_scanner.scanner --sync-reports
+```
+
+This command recalculates validation using the latest rules, updates each local report, and writes it to Google Sheets/Supabase. Repeating the command replaces records from the same source hash instead of duplicating them.
+
+## Supabase setup
+
+Add the project URL and service-role key to `.env`, then run `sql/realtor_profile_vision_schema.sql` once in the Supabase SQL editor:
+
+```env
+SUPABASE_URL=your_project_url
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```
+
+Run `--setup-storage` to test the schema and credentials.
 
 ## Folder structure
 
@@ -82,18 +139,22 @@ Put saved PNG/JPG profiles into `incoming`.
 .\.venv\Scripts\python.exe -m realtor_profile_downloader.vision_scanner.scanner --watch
 ```
 
+## List models available to the Gemini key
+
+```powershell
+.\.venv\Scripts\python.exe -m realtor_profile_downloader.vision_scanner.scanner --list-models
+```
+
 ## Gemini quota behavior
 
 Gemini quotas are applied per Google Cloud project and can differ by model. When the primary model is unavailable or its model-specific quota is exhausted, the scanner tries the configured fallback model. If every configured model is out of quota, processing stops and the current screenshot is returned to `incoming`; it is not moved to `failed` and is not lost.
 
-Check current limits in Google AI Studio. Daily quotas reset according to Google's quota schedule.
-
 ## Output status
 
-- `COMPLETE`: all visible sections were extracted and counts align
-- `PARTIAL_HIDDEN_ROWS`: summary is usable, but the screenshot contains hidden table rows
-- `LOW_CONFIDENCE`: average section confidence is below 75
+- `COMPLETE`: visible data is complete and validation totals align
+- `PARTIAL_HIDDEN_ROWS`: usable summary, but hidden table rows or partial title relationships exist
+- `LOW_CONFIDENCE`: effective average section confidence is below 75
 - `TOTAL_MISMATCH`: buyer + seller does not equal total
-- `NEEDS_REVIEW`: a critical identity field or validation rule failed
+- `NEEDS_REVIEW`: a critical identity or count validation rule failed
 
 A complete JSON audit report is written to the `reports` folder for every processed profile.
