@@ -78,17 +78,18 @@ def file_hash(path: Path) -> str:
 
 
 def sync_existing_reports(config: ScannerConfig) -> int:
-    """Write existing JSON reports to configured external storage without another Gemini call.
+    """Batch-upload existing JSON reports without another Gemini call.
 
-    Validation is recalculated with the current validator and saved back into each report, so
-    improvements to validation also apply to profiles that were scanned before Google Sheets or
-    Supabase was configured.
+    Reports are loaded and validated locally first. Google Sheets then rebuilds its scanner-owned
+    tabs in one batch, avoiding the repeated per-report reads that trigger the Sheets API quota.
     """
     folders = config.prepare()
     storage = StorageRouter(config.storage)
     storage.initialize()
 
-    synced = 0
+    records = []
+    prepared_reports: list[tuple[Path, dict, object]] = []
+
     for report_path in sorted(folders["reports"].glob("*.json")):
         try:
             payload = json.loads(report_path.read_text(encoding="utf-8"))
@@ -98,16 +99,24 @@ def sync_existing_reports(config: ScannerConfig) -> int:
             profile = ProfileExtraction.model_validate(payload["profile"])
             metadata = dict(payload["metadata"])
             validation = validate_profile(profile)
-            storage.write(profile, metadata, validation)
-
-            payload["validation"] = validation.model_dump()
-            report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            synced += 1
-            logger.info("Synced report %s with status %s", report_path.name, validation.status)
+            records.append((profile, metadata, validation))
+            prepared_reports.append((report_path, payload, validation))
         except Exception:
-            logger.exception("Failed to sync report %s", report_path.name)
+            logger.exception("Failed to prepare report %s", report_path.name)
 
-    return synced
+    if not records:
+        logger.info("No valid JSON reports were found to sync.")
+        return 0
+
+    storage.write_many(records)
+
+    for report_path, payload, validation in prepared_reports:
+        payload["validation"] = validation.model_dump()
+        payload.pop("storage_error", None)
+        report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info("Synced report %s with status %s", report_path.name, validation.status)
+
+    return len(records)
 
 
 class LocalProfileScanner:
@@ -267,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--sync-reports",
         action="store_true",
-        help="Upload existing JSON reports to configured storage without calling Gemini.",
+        help="Batch-upload existing JSON reports to configured storage without calling Gemini.",
     )
     return parser
 
