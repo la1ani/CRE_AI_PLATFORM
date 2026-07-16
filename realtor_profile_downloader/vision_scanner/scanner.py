@@ -14,7 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .cropper import ProfileCropper
-from .gemini_client import GeminiVisionClient
+from .gemini_client import GeminiQuotaExceededError, GeminiVisionClient
 from .models import ProfileExtraction
 from .storage import StorageConfig, StorageRouter
 from .validator import validate_profile
@@ -28,6 +28,7 @@ class ScannerConfig:
     root: Path
     gemini_api_key: str
     gemini_model: str
+    gemini_fallback_models: tuple[str, ...]
     crop_scale: float
     keep_crops: bool
     poll_seconds: int
@@ -36,10 +37,16 @@ class ScannerConfig:
     @classmethod
     def from_env(cls) -> "ScannerConfig":
         root = Path(os.getenv("REALTOR_PROFILE_ROOT", r"C:\RealtorProfileScanner")).expanduser()
+        fallback_models = tuple(
+            model.strip()
+            for model in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",")
+            if model.strip()
+        )
         return cls(
             root=root,
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip(),
+            gemini_fallback_models=fallback_models,
             crop_scale=float(os.getenv("VISION_CROP_SCALE", "2.0")),
             keep_crops=os.getenv("KEEP_VISION_CROPS", "false").lower() in {"1", "true", "yes"},
             poll_seconds=max(5, int(os.getenv("VISION_POLL_SECONDS", "30"))),
@@ -72,7 +79,11 @@ class LocalProfileScanner:
         self.config = config
         self.folders = config.prepare()
         self.cropper = ProfileCropper(scale=config.crop_scale)
-        self.vision = GeminiVisionClient(config.gemini_api_key, config.gemini_model)
+        self.vision = GeminiVisionClient(
+            config.gemini_api_key,
+            config.gemini_model,
+            config.gemini_fallback_models,
+        )
         self.storage = StorageRouter(config.storage)
         self.state_path = config.root / ".scanner_state.json"
         self.state = self._load_state()
@@ -101,6 +112,12 @@ class LocalProfileScanner:
             try:
                 self.process(image)
                 completed += 1
+            except GeminiQuotaExceededError as exc:
+                logger.error("%s", exc)
+                logger.error(
+                    "Stopping this batch so no more requests are attempted. The current screenshot was returned to Incoming."
+                )
+                break
             except Exception:
                 logger.exception("Failed to process %s", image.name)
         return completed
@@ -120,8 +137,7 @@ class LocalProfileScanner:
 
         try:
             crops = self.cropper.create_crops(processing_path, crop_dir)
-            extracted = {section: self.vision.extract(section, crop_path) for section, crop_path in crops.items()}
-            profile = ProfileExtraction(**extracted)
+            profile: ProfileExtraction = self.vision.extract_profile(crops)
             validation = validate_profile(profile)
             metadata = {
                 "source_file": processing_path.name,
@@ -131,10 +147,21 @@ class LocalProfileScanner:
             self.storage.write(profile, metadata, validation)
             report_path = self.folders["reports"] / f"{processing_path.stem}-{source_hash[:8]}.json"
             report_path.write_text(
-                json.dumps({"metadata": metadata, "validation": validation.model_dump(), "profile": profile.model_dump()}, indent=2),
+                json.dumps(
+                    {
+                        "metadata": metadata,
+                        "validation": validation.model_dump(),
+                        "profile": profile.model_dump(),
+                    },
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
-            target_folder = "review" if validation.status in {"LOW_CONFIDENCE", "TOTAL_MISMATCH", "NEEDS_REVIEW"} else "processed"
+            target_folder = (
+                "review"
+                if validation.status in {"LOW_CONFIDENCE", "TOTAL_MISMATCH", "NEEDS_REVIEW"}
+                else "processed"
+            )
             shutil.move(str(processing_path), self._unique_path(self.folders[target_folder] / processing_path.name))
             self.state[source_hash] = {
                 "source_file": processing_path.name,
@@ -144,10 +171,20 @@ class LocalProfileScanner:
             }
             self._save_state()
             logger.info("Processed %s with status %s", processing_path.name, validation.status)
+        except GeminiQuotaExceededError:
+            # Quota is an external temporary condition, not a bad screenshot. Return the file
+            # to Incoming so it can be retried after reset or after enabling another model.
+            if processing_path.exists():
+                shutil.move(
+                    str(processing_path),
+                    self._unique_path(self.folders["incoming"] / processing_path.name),
+                )
+            raise
         except Exception as exc:
             error_report = self.folders["reports"] / f"{processing_path.stem}-{source_hash[:8]}-error.txt"
             error_report.write_text(f"{type(exc).__name__}: {exc}", encoding="utf-8")
-            shutil.move(str(processing_path), self._unique_path(self.folders["failed"] / processing_path.name))
+            if processing_path.exists():
+                shutil.move(str(processing_path), self._unique_path(self.folders["failed"] / processing_path.name))
             raise
         finally:
             if crop_dir.exists() and not self.config.keep_crops:
