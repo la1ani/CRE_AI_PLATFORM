@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -8,6 +9,8 @@ from google.oauth2.service_account import Credentials
 
 from .models import ProfileExtraction, ValidationResult
 from .normalizer import master_row, normalize_money, profile_key
+
+logger = logging.getLogger(__name__)
 
 MASTER_HEADERS = [
     "Profile Key", "Name", "Brokerage", "Email", "Phone", "Languages", "Source File", "Source Hash",
@@ -151,9 +154,14 @@ class StorageRouter:
             self.writers.append(GoogleSheetsWriter(config.google_sheet_id, config.google_service_account_file))
         if config.supabase_url and config.supabase_service_role_key:
             self.writers.append(SupabaseWriter(config.supabase_url, config.supabase_service_role_key))
+        if not self.writers:
+            logger.warning(
+                "No Google Sheets or Supabase storage is configured. Extraction will continue in local report-only mode."
+            )
 
     def write(self, profile: ProfileExtraction, metadata: dict[str, Any], validation: ValidationResult) -> None:
-        if not self.writers:
-            raise RuntimeError("No storage configured. Configure Google Sheets, Supabase, or both.")
+        # scanner.py always writes a complete JSON audit report after this call. External
+        # storage is intentionally optional so the user can verify extraction before setting
+        # up Google Sheets or Supabase credentials.
         for writer in self.writers:
             writer.write(profile, metadata, validation)
