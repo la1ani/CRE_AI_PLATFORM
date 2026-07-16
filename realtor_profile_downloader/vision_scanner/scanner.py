@@ -77,6 +77,39 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sync_existing_reports(config: ScannerConfig) -> int:
+    """Write existing JSON reports to configured external storage without another Gemini call.
+
+    Validation is recalculated with the current validator and saved back into each report, so
+    improvements to validation also apply to profiles that were scanned before Google Sheets or
+    Supabase was configured.
+    """
+    folders = config.prepare()
+    storage = StorageRouter(config.storage)
+    storage.initialize()
+
+    synced = 0
+    for report_path in sorted(folders["reports"].glob("*.json")):
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            if not all(key in payload for key in ("metadata", "profile")):
+                logger.warning("Skipping unrecognized report file %s", report_path.name)
+                continue
+            profile = ProfileExtraction.model_validate(payload["profile"])
+            metadata = dict(payload["metadata"])
+            validation = validate_profile(profile)
+            storage.write(profile, metadata, validation)
+
+            payload["validation"] = validation.model_dump()
+            report_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            synced += 1
+            logger.info("Synced report %s with status %s", report_path.name, validation.status)
+        except Exception:
+            logger.exception("Failed to sync report %s", report_path.name)
+
+    return synced
+
+
 class LocalProfileScanner:
     def __init__(self, config: ScannerConfig) -> None:
         self.config = config
@@ -213,6 +246,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List generateContent models available to the configured Gemini API key and exit.",
     )
+    mode.add_argument(
+        "--setup-storage",
+        action="store_true",
+        help="Verify configured Google Sheets/Supabase and create the Google worksheet tabs.",
+    )
+    mode.add_argument(
+        "--sync-reports",
+        action="store_true",
+        help="Upload existing JSON reports to configured storage without calling Gemini.",
+    )
     return parser
 
 
@@ -232,6 +275,17 @@ def main() -> None:
         print("Gemini models available to this API project for generateContent:")
         for model in models:
             print(model)
+        return
+
+    if args.setup_storage:
+        storage = StorageRouter(config.storage)
+        storage.initialize()
+        print("Storage setup complete: " + ", ".join(storage.configured_names))
+        return
+
+    if args.sync_reports:
+        count = sync_existing_reports(config)
+        print(f"Synced {count} existing report(s) without using Gemini.")
         return
 
     scanner = LocalProfileScanner(config)
