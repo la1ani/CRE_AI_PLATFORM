@@ -81,7 +81,7 @@ class GoogleSheetsWriter:
         if not values:
             sheet.append_row(headers, value_input_option="RAW")
         elif values[0] != headers:
-            sheet.update("A1", [headers], value_input_option="RAW")
+            sheet.update(range_name="A1", values=[headers], value_input_option="RAW")
         return sheet
 
     def initialize(self) -> None:
@@ -129,7 +129,7 @@ class GoogleSheetsWriter:
         )
         values = [[master.get(header, "") if master.get(header) is not None else "" for header in MASTER_HEADERS]]
         if target_row:
-            sheet.update(f"A{target_row}", values, value_input_option="RAW")
+            sheet.update(range_name=f"A{target_row}", values=values, value_input_option="RAW")
         else:
             sheet.append_rows(values, value_input_option="RAW")
 
