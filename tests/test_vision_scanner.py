@@ -2,10 +2,12 @@ from realtor_profile_downloader.vision_scanner.models import (
     ExtrasSection,
     IdentitySection,
     LoanDetailsSection,
+    MonthlyProductionPoint,
     PerformanceLine,
     PerformanceSection,
     ProfileExtraction,
     RelationshipsSection,
+    TitleCompanyRelationship,
     TransactionsSection,
 )
 from realtor_profile_downloader.vision_scanner.normalizer import normalize_money, normalize_percent
@@ -53,3 +55,67 @@ def test_total_mismatch_requires_review():
     )
     result = validate_profile(profile)
     assert result.status == "TOTAL_MISMATCH"
+
+
+def test_unread_monthly_chart_and_partial_title_totals_reduce_score():
+    profile = ProfileExtraction(
+        identity=IdentitySection(realtor_name="A Stephanie Mcgrew", email="agent@example.com", confidence=100),
+        performance=PerformanceSection(
+            buyer_side=PerformanceLine(sides=2),
+            seller_side=PerformanceLine(sides=6),
+            total=PerformanceLine(sides=8),
+            monthly_production=[
+                MonthlyProductionPoint(month="Jun"),
+                MonthlyProductionPoint(month="Jul"),
+                MonthlyProductionPoint(month="Aug"),
+            ],
+            confidence=100,
+        ),
+        relationships=RelationshipsSection(confidence=100),
+        transactions=TransactionsSection(expected_entries=2, visible_entries=2, confidence=100),
+        loan_details=LoanDetailsSection(expected_entries=1, visible_entries=1, confidence=100),
+        extras=ExtrasSection(
+            title_relationships=[
+                TitleCompanyRelationship(side="buyer", company="Wfg Title", transaction_count=1),
+                TitleCompanyRelationship(side="seller", company="Capital Title", transaction_count=2),
+                TitleCompanyRelationship(side="seller", company="Select Title", transaction_count=1),
+                TitleCompanyRelationship(side="seller", company="Old Republic Title", transaction_count=1),
+            ],
+            confidence=100,
+        ),
+    )
+
+    result = validate_profile(profile)
+    issue_codes = {issue.code for issue in result.issues}
+
+    assert result.status == "PARTIAL_HIDDEN_ROWS"
+    assert result.score < 100
+    assert "MONTHLY_CHART_VALUES_UNREADABLE" in issue_codes
+    assert "TITLE_BUYER_RELATIONSHIPS_PARTIAL" in issue_codes
+    assert "TITLE_SELLER_RELATIONSHIPS_PARTIAL" in issue_codes
+
+
+def test_complete_title_totals_do_not_create_partial_issue():
+    profile = ProfileExtraction(
+        identity=IdentitySection(realtor_name="Complete Agent", email="agent@example.com", confidence=95),
+        performance=PerformanceSection(
+            buyer_side=PerformanceLine(sides=1),
+            seller_side=PerformanceLine(sides=2),
+            total=PerformanceLine(sides=3),
+            confidence=95,
+        ),
+        relationships=RelationshipsSection(confidence=95),
+        transactions=TransactionsSection(confidence=95),
+        loan_details=LoanDetailsSection(confidence=95),
+        extras=ExtrasSection(
+            title_relationships=[
+                TitleCompanyRelationship(side="buyer", company="Buyer Title", transaction_count=1),
+                TitleCompanyRelationship(side="seller", company="Seller Title", transaction_count=2),
+            ],
+            confidence=95,
+        ),
+    )
+
+    result = validate_profile(profile)
+    assert result.status == "COMPLETE"
+    assert not any(issue.code.startswith("TITLE_") for issue in result.issues)
