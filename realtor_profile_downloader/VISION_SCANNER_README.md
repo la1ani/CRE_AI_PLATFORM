@@ -99,6 +99,8 @@ Profiles scanned before Google Sheets was configured do not need another Gemini 
 
 This command recalculates validation using the latest rules, updates each local report, and writes it to Google Sheets/Supabase. Repeating the command replaces records from the same source hash instead of duplicating them.
 
+If Gemini extraction succeeds but Google Sheets or Supabase temporarily fails, the JSON report is still preserved and the screenshot moves to `review`. Fix the storage connection and run `--sync-reports`; no second Gemini call is required.
+
 ## Supabase setup
 
 Add the project URL and service-role key to `.env`, then run `sql/realtor_profile_vision_schema.sql` once in the Supabase SQL editor:
