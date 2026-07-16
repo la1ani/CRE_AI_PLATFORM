@@ -39,13 +39,16 @@ class ScannerConfig:
         root = Path(os.getenv("REALTOR_PROFILE_ROOT", r"C:\RealtorProfileScanner")).expanduser()
         fallback_models = tuple(
             model.strip()
-            for model in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",")
+            for model in os.getenv(
+                "GEMINI_FALLBACK_MODELS",
+                "gemini-3.5-flash,gemini-2.5-flash",
+            ).split(",")
             if model.strip()
         )
         return cls(
             root=root,
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip(),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip(),
             gemini_fallback_models=fallback_models,
             crop_scale=float(os.getenv("VISION_CROP_SCALE", "2.0")),
             keep_crops=os.getenv("KEEP_VISION_CROPS", "false").lower() in {"1", "true", "yes"},
@@ -104,7 +107,8 @@ class LocalProfileScanner:
 
     def scan_once(self) -> int:
         images = sorted(
-            path for path in self.folders["incoming"].iterdir()
+            path
+            for path in self.folders["incoming"].iterdir()
             if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
         )
         completed = 0
@@ -172,8 +176,6 @@ class LocalProfileScanner:
             self._save_state()
             logger.info("Processed %s with status %s", processing_path.name, validation.status)
         except GeminiQuotaExceededError:
-            # Quota is an external temporary condition, not a bad screenshot. Return the file
-            # to Incoming so it can be retried after reset or after enabling another model.
             if processing_path.exists():
                 shutil.move(
                     str(processing_path),
@@ -206,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="Process current incoming files once and exit (default).")
     mode.add_argument("--watch", action="store_true", help="Continuously watch the incoming folder.")
+    mode.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List generateContent models available to the configured Gemini API key and exit.",
+    )
     return parser
 
 
@@ -213,7 +220,21 @@ def main() -> None:
     load_dotenv()
     args = build_parser().parse_args()
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s [%(levelname)s] %(message)s")
-    scanner = LocalProfileScanner(ScannerConfig.from_env())
+    config = ScannerConfig.from_env()
+
+    if args.list_models:
+        vision = GeminiVisionClient(
+            config.gemini_api_key,
+            config.gemini_model,
+            config.gemini_fallback_models,
+        )
+        models = vision.list_generate_models(refresh=True)
+        print("Gemini models available to this API project for generateContent:")
+        for model in models:
+            print(model)
+        return
+
+    scanner = LocalProfileScanner(config)
     if not args.watch:
         count = scanner.scan_once()
         logger.info("Finished. Processed %s file(s).", count)
