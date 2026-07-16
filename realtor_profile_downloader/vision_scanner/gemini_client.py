@@ -43,7 +43,7 @@ def _is_quota_error(exc: Exception) -> bool:
 
 def _is_model_not_found(exc: Exception) -> bool:
     text = _message(exc)
-    return "404" in text or "NOT_FOUND" in text or "MODEL" in text and "NOT FOUND" in text
+    return "404" in text or "NOT_FOUND" in text or ("MODEL" in text and "NOT FOUND" in text)
 
 
 def _is_transient_error(exc: Exception) -> bool:
@@ -64,24 +64,67 @@ def _is_transient_error(exc: Exception) -> bool:
     )
 
 
+def _clean_model_name(name: str) -> str:
+    return name.removeprefix("models/").strip()
+
+
 class GeminiVisionClient:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash-lite",
-        fallback_models: Iterable[str] = ("gemini-2.5-flash",),
+        model: str = "gemini-3.1-flash-lite",
+        fallback_models: Iterable[str] = ("gemini-3.5-flash", "gemini-2.5-flash"),
     ) -> None:
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is required.")
         self.client = genai.Client(api_key=api_key)
-        self.models = tuple(dict.fromkeys(x.strip() for x in (model, *fallback_models) if x.strip()))
+        self.models = tuple(
+            dict.fromkeys(_clean_model_name(x) for x in (model, *fallback_models) if x.strip())
+        )
+        self._available_generate_models: tuple[str, ...] | None = None
+
+    def list_generate_models(self, refresh: bool = False) -> tuple[str, ...]:
+        """Return models this API project exposes for generateContent."""
+        if self._available_generate_models is not None and not refresh:
+            return self._available_generate_models
+
+        available: list[str] = []
+        for model in self.client.models.list():
+            actions = tuple(getattr(model, "supported_actions", ()) or ())
+            if "generateContent" in actions:
+                name = _clean_model_name(str(getattr(model, "name", "")))
+                if name:
+                    available.append(name)
+
+        self._available_generate_models = tuple(dict.fromkeys(available))
+        return self._available_generate_models
+
+    def _candidate_models(self) -> tuple[str, ...]:
+        """Prefer configured models that are actually visible to this API project."""
+        try:
+            available = set(self.list_generate_models())
+        except Exception as exc:
+            logger.warning("Could not list Gemini models for this project: %s", exc)
+            return self.models
+
+        if not available:
+            return self.models
+
+        candidates = tuple(model for model in self.models if model in available)
+        unavailable = tuple(model for model in self.models if model not in available)
+        if unavailable:
+            logger.warning(
+                "Configured Gemini model(s) not exposed to this API project: %s",
+                ", ".join(unavailable),
+            )
+        return candidates
 
     def extract_profile(self, crops: Mapping[str, Path]) -> ProfileExtraction:
         """Extract a complete profile using one API request for all available crops.
 
         Sending all labeled crops in one request reduces free-tier usage from six requests per
-        realtor to one request per realtor. If the primary model is unavailable or has exhausted
-        a model-specific quota, the next configured model is attempted.
+        realtor to one request per realtor. Configured models are filtered against the models
+        exposed by the user's API project before generation is attempted.
         """
         contents: list[object] = [COMBINED_PROMPT]
         supplied_sections = 0
@@ -98,10 +141,19 @@ class GeminiVisionClient:
         if supplied_sections == 0:
             raise RuntimeError("No profile crops were supplied to Gemini Vision.")
 
+        candidates = self._candidate_models()
+        if not candidates:
+            available = self.list_generate_models()
+            raise GeminiModelsUnavailableError(
+                "None of the configured models are available to this API project. "
+                f"Configured: {', '.join(self.models)}. "
+                f"Available generateContent models: {', '.join(available) or 'none'}."
+            )
+
         quota_failures: list[str] = []
         unavailable_models: list[str] = []
 
-        for model in self.models:
+        for model in candidates:
             try:
                 logger.info("Extracting profile with Gemini model %s in one request.", model)
                 return self._generate(model, contents)
@@ -112,7 +164,10 @@ class GeminiVisionClient:
                     continue
                 if _is_model_not_found(exc):
                     unavailable_models.append(model)
-                    logger.warning("Gemini model %s is unavailable for this API project; trying fallback model.", model)
+                    logger.warning(
+                        "Gemini model %s is unavailable for this API project; trying fallback model.",
+                        model,
+                    )
                     continue
                 raise
 
@@ -120,11 +175,11 @@ class GeminiVisionClient:
             raise GeminiQuotaExceededError(
                 "Gemini quota is exhausted for configured model(s): "
                 + ", ".join(quota_failures)
-                + ". The screenshot was not lost. Wait for the quota reset, enable billing, or configure another model."
+                + ". The screenshot was not lost. Wait for the quota reset, enable billing, or configure another available model."
             )
 
         raise GeminiModelsUnavailableError(
-            "No configured Gemini model was available: " + ", ".join(unavailable_models or self.models)
+            "No configured Gemini model was available: " + ", ".join(unavailable_models or candidates)
         )
 
     @retry(
