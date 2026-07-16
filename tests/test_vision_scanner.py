@@ -1,6 +1,7 @@
 from realtor_profile_downloader.vision_scanner.models import (
     ExtrasSection,
     IdentitySection,
+    LoanDetailRow,
     LoanDetailsSection,
     MonthlyProductionPoint,
     PerformanceLine,
@@ -8,6 +9,7 @@ from realtor_profile_downloader.vision_scanner.models import (
     ProfileExtraction,
     RelationshipsSection,
     TitleCompanyRelationship,
+    TransactionRow,
     TransactionsSection,
 )
 from realtor_profile_downloader.vision_scanner.normalizer import normalize_money, normalize_percent
@@ -72,8 +74,18 @@ def test_unread_monthly_chart_and_partial_title_totals_reduce_score():
             confidence=100,
         ),
         relationships=RelationshipsSection(confidence=100),
-        transactions=TransactionsSection(expected_entries=2, visible_entries=2, confidence=100),
-        loan_details=LoanDetailsSection(expected_entries=1, visible_entries=1, confidence=100),
+        transactions=TransactionsSection(
+            expected_entries=2,
+            visible_entries=2,
+            rows=[TransactionRow(address="1 Main St"), TransactionRow(address="2 Main St")],
+            confidence=100,
+        ),
+        loan_details=LoanDetailsSection(
+            expected_entries=1,
+            visible_entries=1,
+            rows=[LoanDetailRow(address="1 Main St")],
+            confidence=100,
+        ),
         extras=ExtrasSection(
             title_relationships=[
                 TitleCompanyRelationship(side="buyer", company="Wfg Title", transaction_count=1),
@@ -89,10 +101,12 @@ def test_unread_monthly_chart_and_partial_title_totals_reduce_score():
     issue_codes = {issue.code for issue in result.issues}
 
     assert result.status == "PARTIAL_HIDDEN_ROWS"
-    assert result.score < 100
+    assert result.score == 82
     assert "MONTHLY_CHART_VALUES_UNREADABLE" in issue_codes
     assert "TITLE_BUYER_RELATIONSHIPS_PARTIAL" in issue_codes
     assert "TITLE_SELLER_RELATIONSHIPS_PARTIAL" in issue_codes
+    assert "TRANSACTION_VISIBLE_COUNT_MISMATCH" not in issue_codes
+    assert "LOAN_VISIBLE_COUNT_MISMATCH" not in issue_codes
 
 
 def test_complete_title_totals_do_not_create_partial_issue():
