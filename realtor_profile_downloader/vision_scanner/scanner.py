@@ -181,33 +181,46 @@ class LocalProfileScanner:
                 "source_hash": source_hash,
                 "scanned_at": scanned_at,
             }
-            self.storage.write(profile, metadata, validation)
             report_path = self.folders["reports"] / f"{processing_path.stem}-{source_hash[:8]}.json"
-            report_path.write_text(
-                json.dumps(
-                    {
-                        "metadata": metadata,
-                        "validation": validation.model_dump(),
-                        "profile": profile.model_dump(),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            report_payload = {
+                "metadata": metadata,
+                "validation": validation.model_dump(),
+                "profile": profile.model_dump(),
+            }
+            report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+            storage_error: str | None = None
+            try:
+                self.storage.write(profile, metadata, validation)
+            except Exception as exc:
+                storage_error = f"{type(exc).__name__}: {exc}"
+                report_payload["storage_error"] = storage_error
+                report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+                logger.exception(
+                    "Extraction succeeded for %s, but external storage failed. Use --sync-reports after fixing storage.",
+                    processing_path.name,
+                )
+
             target_folder = (
                 "review"
-                if validation.status in {"LOW_CONFIDENCE", "TOTAL_MISMATCH", "NEEDS_REVIEW"}
+                if storage_error or validation.status in {"LOW_CONFIDENCE", "TOTAL_MISMATCH", "NEEDS_REVIEW"}
                 else "processed"
             )
             shutil.move(str(processing_path), self._unique_path(self.folders[target_folder] / processing_path.name))
             self.state[source_hash] = {
                 "source_file": processing_path.name,
                 "status": validation.status,
+                "storage_status": "PENDING" if storage_error else "SYNCED",
                 "scanned_at": scanned_at,
                 "report": str(report_path),
             }
             self._save_state()
-            logger.info("Processed %s with status %s", processing_path.name, validation.status)
+            logger.info(
+                "Processed %s with status %s%s",
+                processing_path.name,
+                validation.status,
+                " (storage pending)" if storage_error else "",
+            )
         except GeminiQuotaExceededError:
             if processing_path.exists():
                 shutil.move(
