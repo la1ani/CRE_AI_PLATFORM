@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS documents (
     processed_status TEXT DEFAULT 'processed',
     extracted_at TIMESTAMPTZ DEFAULT now(),
     metadata JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (property_id, file_name, document_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_property_id ON documents (property_id);
@@ -158,14 +159,15 @@ CREATE TABLE IF NOT EXISTS financial_reports (
     confidence NUMERIC(6, 2),
     source_pdf TEXT,
     raw_json JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (property_id, source_pdf)
 );
 
 CREATE INDEX IF NOT EXISTS idx_financial_reports_property_id ON financial_reports (property_id);
 
 CREATE TABLE IF NOT EXISTS analysis (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    property_id UUID REFERENCES properties(id) ON DELETE CASCADE,
+    property_id UUID UNIQUE REFERENCES properties(id) ON DELETE CASCADE,
     due_diligence_score NUMERIC(6, 2),
     seller_weakness_score NUMERIC(6, 2),
     acquisition_score NUMERIC(6, 2),
