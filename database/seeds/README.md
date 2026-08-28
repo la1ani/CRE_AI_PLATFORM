@@ -13,6 +13,7 @@ use text IDs in some tables and stable bigint IDs in others.
 - `upload_6410_full_rent_roll_existing_schema.sql`: complete normalized 33-suite rent roll and tenant rows for 6410-6578 FM 1960 Rd (136,738 SF total; 47.4% occupied / 52.6% vacant).
 - `upload_4145_midtown_burlington_woerner_existing_schema.sql`: 4145 Gessner, Plazas at Midtown I, Plazas at Midtown II, Burlington - 10311 I-45 N, and 210 Woerner Rd.
 - `upload_4145_midtown_burlington_woerner_rent_rolls.sql`: 23 normalized rent-roll rows and 23 tenant rows for 4145 Gessner, Midtown I, Midtown II, and Burlington. 210 Woerner Rd is vacant development land and has no tenant rows.
+- `attachment_manifest.md`: canonical property-to-PDF attachment mapping and backend audit.
 
 ## Canonical 21-property audit set
 
@@ -42,6 +43,12 @@ The production database has canonical structured records for:
 
 At the 2026-08-28 completeness audit, these canonical records totaled 21 properties, 21 documents, 35 broker rows, 21 financial reports, 21 analysis rows, 21 committee reports, 21 acquisition decisions, 150 rent-roll rows, and 150 tenant rows. Source documents that do not contain a field are intentionally left null and identified in the due-diligence/missing-information fields rather than guessed.
 
-The upload scripts use stable IDs and `WHERE NOT EXISTS` checks so rerunning
-them does not create duplicate records. They contain no credentials and must be
-run only against the existing production schema described above.
+## PDF attachment integrity
+
+Every one of the 21 canonical `documents` rows has a non-null, typed attachment locator. Nine rows point to actual PDF objects in the private Supabase Storage bucket `offering-memorandums`. Twelve rows point to Google Drive with the `gdrive:<file-id>` convention; Midtown I and Midtown II intentionally share the same portfolio PDF, so the 21 relationships represent 20 distinct source PDFs.
+
+The actual PDF binaries are kept in the document backends rather than committed to Git. GitHub stores the structured seeds, the attachment manifest, and validation logic. See `attachment_manifest.md` for the complete mapping and `document_locator.py` in the repository root for strict locator validation.
+
+Point West Center currently uses the existing `Point_West_Center_key_pages.pdf` Drive attachment under the canonical database source name `texas-point-west-center.pdf`. It is identified as a key-pages derivative in the manifest and must not be represented as the complete original flyer unless the full original binary is supplied.
+
+The upload scripts use stable IDs and `WHERE NOT EXISTS` checks so rerunning them does not create duplicate records. They contain no credentials and must be run only against the existing production schema described above.
