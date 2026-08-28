@@ -31,6 +31,7 @@ from typing import Any, Dict, List
 
 from supabase import create_client
 from config import settings
+from document_locator import parse_document_locator
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,14 @@ class SupabaseClient:
         ).insert(data).execute()
 
     def insert_document(self, data: Dict[str, Any]) -> None:
+        """Insert a document only when it has a valid, resolvable locator.
+
+        This prevents a metadata-only row from being recorded as a successfully
+        attached OM. Supported locator formats are validated by
+        :func:`document_locator.parse_document_locator`.
+        """
+        locator = data.get("drive_file_id")
+        parse_document_locator(locator)
 
         logger.info(
             "Inserting document %s",
