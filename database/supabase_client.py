@@ -13,7 +13,11 @@ Tables expected to exist in your Supabase project:
   - brokers: broker contact details parsed from OMs.
   - analysis: aggregated scores from due diligence, seller weakness and
     deal ranking agents.
-  - tenants: tenant data extracted from rent rolls.
+  - tenants and rent_rolls: tenant and lease data extracted from rent rolls.
+  - financial_reports: income, expense, NOI, and valuation inputs.
+  - due_diligence_items, seller_weakness_items, valuation_scenarios, and
+    broker_questions: structured acquisition-review details.
+  - committee_reports and acquisition_decisions: final review outputs.
 
 Ensure your Supabase service role key has permissions to insert into
 these tables. To keep the service role key secret, it should be set
@@ -105,6 +109,39 @@ class SupabaseClient:
         self._client.table(
             "analysis"
         ).insert(data).execute()
+
+    def _insert_one(self, table: str, data: Dict[str, Any]) -> None:
+        logger.info("Inserting record into %s", table)
+        self._client.table(table).insert(data).execute()
+
+    def _insert_many(self, table: str, data: List[Dict[str, Any]]) -> None:
+        logger.info("Inserting %d records into %s", len(data), table)
+        if data:
+            self._client.table(table).insert(data).execute()
+
+    def insert_financial_report(self, data: Dict[str, Any]) -> None:
+        self._insert_one("financial_reports", data)
+
+    def insert_rent_rolls(self, data: List[Dict[str, Any]]) -> None:
+        self._insert_many("rent_rolls", data)
+
+    def insert_due_diligence_items(self, data: List[Dict[str, Any]]) -> None:
+        self._insert_many("due_diligence_items", data)
+
+    def insert_seller_weakness_items(self, data: List[Dict[str, Any]]) -> None:
+        self._insert_many("seller_weakness_items", data)
+
+    def insert_valuation_scenarios(self, data: List[Dict[str, Any]]) -> None:
+        self._insert_many("valuation_scenarios", data)
+
+    def insert_broker_questions(self, data: List[Dict[str, Any]]) -> None:
+        self._insert_many("broker_questions", data)
+
+    def insert_committee_report(self, data: Dict[str, Any]) -> None:
+        self._insert_one("committee_reports", data)
+
+    def insert_acquisition_decision(self, data: Dict[str, Any]) -> None:
+        self._insert_one("acquisition_decisions", data)
 
 
 __all__ = ["SupabaseClient"]
