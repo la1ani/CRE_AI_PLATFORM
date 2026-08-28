@@ -10,7 +10,7 @@ Every canonical property has a `documents` row with a non-null attachment locato
 | # | Property | Source PDF | Locator |
 |---:|---|---|---|
 | 1 | Cypress Station Square | texas-cypress-station-square.pdf | `gdrive:1aJryfU7pKPiu5pwWkvk7syUfMMMvSJD_` |
-| 2 | Point West Center | texas-point-west-center.pdf | `gdrive:1AFZS2I3a9fmitJKyfV3MSiL9FXLh0_cK` |
+| 2 | Point West Center | Point West Center.pdf | `gdrive:1yuehoBLowKFc4haaqQSGxTtaoHsp0Cjo` |
 | 3 | Griggs Rd Shopping Center | Griggs Rd Shopping Center.pdf | `offering-memorandums/Griggs Rd Shopping Center.pdf` |
 | 4 | South Loop Center | South Loop Center.pdf | `offering-memorandums/South Loop Center.pdf` |
 | 5 | Sablechase Plaza | Sablechase Plaza.pdf | `offering-memorandums/Sablechase Plaza.pdf` |
@@ -34,8 +34,9 @@ Every canonical property has a `documents` row with a non-null attachment locato
 ## Integrity notes
 
 - There are 21 property/document relationships but 20 distinct source PDFs because Midtown I and Midtown II intentionally share one portfolio OM.
-- All nine `offering-memorandums/...` locators were verified against actual rows in `storage.objects`.
-- All newly uploaded `gdrive:` locators were created/verified as real Google Drive PDF files during the attachment audit.
-- Point West Center currently links to the existing `Point_West_Center_key_pages.pdf` Drive copy under the canonical database source name `texas-point-west-center.pdf`. It contains the key property source pages. Replace this locator if/when the complete original flyer binary is supplied; do not silently claim the derivative is the original full file.
+- All 21 canonical document relationships now point to real PDF files.
+- Point West Center now uses the user-supplied complete 6-page `Point West Center.pdf`; the prior key-pages derivative is no longer the canonical attachment.
+- All nine `offering-memorandums/...` locators were verified against actual rows in Supabase Storage.
+- All `gdrive:` locators used by the canonical records point to Google Drive PDF files.
 - PDF binaries are intentionally not committed to Git. Git stores reproducible structured seed data and this locator manifest; the file backends store the actual PDFs.
 - No passwords, API keys, service-role keys, or other secrets belong in this manifest.
