@@ -7,3 +7,16 @@ __pycache__/
 
 downloads/
 .vscode/
+
+# batch2 processing scratch / working artifacts
+_batch2*/
+_batch2_*
+_renders/
+_braes*
+_inspect*.py
+_tmp_*/
+_tmp_g*/
+_tmp_pdf/
+_batch2_scan.txt
+_dump_all.py
+_render.py
